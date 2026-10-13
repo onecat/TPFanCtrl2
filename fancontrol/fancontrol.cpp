@@ -1672,6 +1672,13 @@ void FANCONTROL::CloseAllNamedPipes() {
 void
 FANCONTROL::UpdateTempDisplay(void)
 {
+    // The native dashboard owns the visible sensor display. Avoid rebuilding
+    // the hidden legacy ListView on every EC sample, but preserve the max
+    // temperature used by the existing system tray icon.
+    if (ModernUI_IsActive()) {
+        this->icontemp = this->State.Sensors[this->iMaxTemp];
+        return;
+    }
 	HWND hLV = ::GetDlgItem(this->hwndDialog, 8101);
 	if (!hLV) return;
 
@@ -1840,8 +1847,7 @@ void FANCONTROL::ProcessTextIcons(void) {
 					_itoa_s((this->icontemp * 9 / 5) + 32, str_value, sizeof(str_value), 10);
 				else
 					_itoa_s(this->icontemp, str_value, sizeof(str_value), 10);
-				sprintf_s(str_value, sizeof(str_value), "%s", str_value);
-				ppTbTextIcon[i]->ChangeText(str_value, this->gSensorNames[iMaxTemp], iFarbeIconB, iFontIconB, myszTip);
+					ppTbTextIcon[i]->ChangeText(str_value, this->gSensorNames[iMaxTemp], iFarbeIconB, iFontIconB, myszTip);
 			}
 		}
 		pTextIconMutex->Unlock();
