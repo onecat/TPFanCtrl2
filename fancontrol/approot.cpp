@@ -3,6 +3,7 @@
 #include "fancontrol.h"
 #include "portaccess.h"
 #include "sharedstate.h"
+#include "../ui-modern/modern_ui.h"
 
 // the retry window covers drivers that come up late during boot
 static bool OpenPortDriver() {
@@ -520,7 +521,12 @@ void WorkerThread(void *dummy) {
 
         g_dialogWnd = fc.GetDialogWnd();
 
+        // Headless service keeps its old lifecycle; users see only the new UI.
+        if (!g_isService)
+            ModernUI_Start(g_dialogWnd, fc.StartsMinimized());
+
 		fc.ProcessDialog();
+        ModernUI_Stop();
 
 		::PostMessage(g_dialogWnd, WM_COMMAND, 5020, 0);
 	}

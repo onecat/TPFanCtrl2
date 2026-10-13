@@ -13,6 +13,8 @@
 #include <string>
 #include <cstring>
 #include "../fancontrol/sharedstate.h"
+#include "modern_ui.h"
+extern bool FanControlAutostartEnabled();
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"TPFanCtrl2ModernDashboard";
@@ -52,6 +54,8 @@ bool SystemDark() {
 
 struct Dashboard {
     HWND hwnd = nullptr;
+    HWND legacy = nullptr;
+    bool autostart = false;
     HANDLE mapping = nullptr;
     FCSHARED* shared = nullptr;
     bool dark = false;
@@ -75,7 +79,7 @@ struct Dashboard {
     HFONT number = nullptr;
     HFONT heading = nullptr;
     RECT modes[3]{};
-    RECT down{}, up{};
+    RECT down{}, up{}, profileOne{}, profileTwo{}, startup{};
 } app;
 
 int S(int n) { return MulDiv(n, static_cast<int>(app.dpi), 96); }
@@ -189,6 +193,7 @@ void UpdateTelemetry() {
         break;
     }
     if(!Connected()) app.pending=false;
+    app.autostart=FanControlAutostartEnabled();
     if(app.pending && app.shared) {
         LONG ack=InterlockedCompareExchange(&app.shared->ackSeq,0,0);
         if(static_cast<LONG>(ack-app.pendingSeq)>=0 ||
@@ -206,6 +211,18 @@ void RequestMode(int mode) {
     ZeroMemory(state->cmdLevelText,sizeof(state->cmdLevelText));
     memcpy(state->cmdLevelText,level.c_str(),
         std::min(level.size(),sizeof(state->cmdLevelText)-1));
+    MemoryBarrier();
+    app.pendingSeq=InterlockedIncrement(&state->cmdSeq);
+    app.commandAt=GetTickCount64();
+    app.pending=true;
+    InvalidateRect(app.hwnd,nullptr,FALSE);
+}
+void RequestProfile(int profile) {
+    if(!Connected() || app.pending || (profile != 0 && profile != 1)) return;
+    FCSHARED* state=app.shared;
+    state->cmdMode=2;
+    state->cmdSmart=profile;
+    state->cmdLevelText[0]=0;
     MemoryBarrier();
     app.pendingSeq=InterlockedIncrement(&state->cmdSeq);
     app.commandAt=GetTickCount64();
@@ -295,13 +312,28 @@ void PaintDashboard(HDC dc,RECT rect) {
     Label(dc,L"Levels 1–7 (fan stop disabled)",left+386,454,content-386,31,
           app.smallFont,t.secondary);
 
-    Label(dc,L"TEMPERATURE SENSORS",left,506,360,31,app.section,t.text);
+    Label(dc,L"SMART PROFILE",left,493,160,29,app.smallFont,t.secondary);
+    app.profileOne=R(left+160,493,116,30);
+    app.profileTwo=R(left+286,493,116,30);
+    for(int i=0;i<2;i++){
+        const RECT r=i==0?app.profileOne:app.profileTwo;
+        bool selected=live && app.mode==2 && app.profile==i;
+        Round(dc,r,selected?t.raised:t.surface,selected?t.accent:t.outline,9);
+        Label(dc,i==0?L"Profile 1":L"Profile 2",
+              left+(i==0?160:286),493,116,30,app.smallFont,
+              live?t.text:t.secondary,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    }
+    app.startup=R(W-282,493,244,30);
+    Round(dc,app.startup,t.surface,t.outline,9);
+    Label(dc,app.autostart?L"Start with Windows: ON":L"Start with Windows: OFF",
+          W-278,493,236,30,app.smallFont,t.text,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    Label(dc,L"TEMPERATURE SENSORS",left,543,360,31,app.section,t.text);
     const int gap=12,columns=4;
     const int cell=(content-gap*(columns-1))/columns;
     for(int i=0;i<12;++i)
-        SensorCard(dc,i,left+(i%columns)*(cell+gap),543+(i/columns)*62,cell,t);
+        SensorCard(dc,i,left+(i%columns)*(cell+gap),579+(i/columns)*62,cell,t);
     Label(dc,L"TPFanCtrl2 Modern  •  Closing UI does not stop the fan service",
-          left,738,content,26,app.smallFont,t.secondary);
+          left,775,content,26,app.smallFont,t.secondary);
 }
 void AdjustManual(int amount) {
     if(!Connected()||app.pending||app.mode!=3)return;
@@ -313,6 +345,12 @@ void ClickAt(int x,int y) {
     POINT p{x,y};
     for(int i=0;i<3;i++) if(Hit(app.modes[i],p)) {
         if(app.mode!=i+1)RequestMode(i+1);
+        return;
+    }
+    if(Hit(app.profileOne,p)) {RequestProfile(0);return;}
+    if(Hit(app.profileTwo,p)) {RequestProfile(1);return;}
+    if(Hit(app.startup,p) && app.legacy) {
+        PostMessageW(app.legacy,WM_COMMAND,MAKEWPARAM(5050,BN_CLICKED),0);
         return;
     }
     if(Hit(app.down,p)) AdjustManual(-1);
@@ -363,6 +401,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         if(wp==VK_UP||wp==VK_RIGHT){AdjustManual(+1);return 0;}
         if(wp==VK_DOWN||wp==VK_LEFT){AdjustManual(-1);return 0;}
         break;
+    case WM_CLOSE:
+        ShowWindow(hwnd,SW_HIDE);
+        return 0;
     case WM_ERASEBKGND:return 1;
     case WM_PAINT: {
         PAINTSTRUCT ps{};
@@ -389,17 +430,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
     case WM_DESTROY:
         KillTimer(hwnd,kPollTimer);
         Unmap();FontsDestroy();
-        PostQuitMessage(0);
+        app.hwnd=nullptr;
         return 0;
     }
     return DefWindowProcW(hwnd,message,wp,lp);
 }
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+// The engine, service and dashboard are all modes of one TPFanControl.exe.
+bool ModernUI_Start(HWND legacyWindow,bool startMinimized) {
+    if(!legacyWindow)return false;
+    app.legacy=legacyWindow;
     app.dpi=GetDpiForSystem();
     if(!app.dpi)app.dpi=96;
+    HINSTANCE instance=GetModuleHandleW(nullptr);
     WNDCLASSEXW wc{};
     wc.cbSize=sizeof(wc);
     wc.hInstance=instance;
@@ -408,19 +452,18 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
     wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
     wc.hIcon=LoadIconW(nullptr,IDI_APPLICATION);
     wc.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1);
-    if(!RegisterClassExW(&wc))return 1;
-    RECT rect{0,0,S(900),S(810)};
+    if(!RegisterClassExW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
+    RECT rect{0,0,S(900),S(860)};
     AdjustWindowRectExForDpi(&rect,WS_OVERLAPPEDWINDOW,FALSE,0,app.dpi);
-    HWND window=CreateWindowExW(0,kWindowClass,L"TPFanCtrl2 — Fan Control",
+    HWND window=CreateWindowExW(0,kWindowClass,L"TPFanControl — Fan Control",
         WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,
         rect.right-rect.left,rect.bottom-rect.top,nullptr,nullptr,instance,nullptr);
-    if(!window)return 2;
-    ShowWindow(window,show);
-    UpdateWindow(window);
-    MSG msg{};
-    while(GetMessageW(&msg,nullptr,0,0)>0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    return static_cast<int>(msg.wParam);
+    if(!window)return false;
+    ShowWindow(legacyWindow,SW_HIDE);
+    if(!startMinimized)ShowWindow(window,SW_SHOWNORMAL);
+    return true;
 }
+bool ModernUI_IsActive(){return app.hwnd&&IsWindow(app.hwnd);}
+void ModernUI_Show(){if(ModernUI_IsActive()){ShowWindow(app.hwnd,SW_RESTORE);SetForegroundWindow(app.hwnd);}}
+void ModernUI_Hide(){if(ModernUI_IsActive())ShowWindow(app.hwnd,SW_HIDE);}
+void ModernUI_Stop(){if(ModernUI_IsActive())DestroyWindow(app.hwnd);}

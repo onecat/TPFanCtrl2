@@ -145,6 +145,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="approot.cpp" />
+    <ClCompile Include="..\\ui-modern\\main.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="dynamicicon.cpp" />
     <ClCompile Include="fancontrol.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Use</PrecompiledHeader>
@@ -179,6 +180,7 @@
   <ItemGroup>
     <ClInclude Include="afxres.h" />
     <ClInclude Include="approot.h" />
+    <ClInclude Include="..\\ui-modern\\modern_ui.h" />
     <ClInclude Include="dynamicicon.h" />
     <ClInclude Include="fancontrol.h" />
     <ClInclude Include="portaccess.h" />

@@ -16,6 +16,7 @@
 // --------------------------------------------------------------
 #include "_prec.h"
 #include "fancontrol.h"
+#include "../ui-modern/modern_ui.h"
 #include "taskbartexticon.h"
 #include "sharedstate.h"
 #include "portaccess.h"
@@ -1081,6 +1082,8 @@ static bool SetStartupShortcut(bool on) {
 	return on ? CreateStartupShortcut() : DeleteStartupShortcut();
 }
 
+bool FanControlAutostartEnabled() { return AutostartEnabled(); }
+
 static bool SetAutostart(bool on) {
 	// the shortcut is this user's own, the service needs elevation
 	bool svc = IsElevated()
@@ -1143,8 +1146,11 @@ ULONG FANCONTROL::OnCommand(WPARAM mp1) {
 			break;
 
 		case 5010: // show window
-			::ShowWindow(this->hwndDialog, TRUE);
-			::SetForegroundWindow(this->hwndDialog);
+            if (ModernUI_IsActive()) ModernUI_Show();
+            else {
+                ::ShowWindow(this->hwndDialog, TRUE);
+                ::SetForegroundWindow(this->hwndDialog);
+            }
 			break;
 
 		case 5040: // bluetooth toggle
@@ -1167,7 +1173,8 @@ ULONG FANCONTROL::OnCommand(WPARAM mp1) {
 			break;
 
 		case 5030: // hide window
-			::ShowWindow(this->hwndDialog, SW_MINIMIZE);
+            if (ModernUI_IsActive()) ModernUI_Hide();
+            else ::ShowWindow(this->hwndDialog, SW_MINIMIZE);
 			break;
 
 		case 5050: // start with windows toggle
@@ -1348,6 +1355,10 @@ ULONG FANCONTROL::OnNewData(WPARAM mp1) {
 //  WM__TASKBAR handler
 //-------------------------------------------------------------------------
 ULONG FANCONTROL::OnTaskbarNotify(LPARAM mp2) {
+    if (ModernUI_IsActive() && (mp2 == WM_LBUTTONDOWN || mp2 == WM_LBUTTONDBLCLK)) {
+        ModernUI_Show();
+        return 0;
+    }
 	switch (mp2) {
 	case WM_LBUTTONDOWN:
 		if (!IsWindowVisible(this->hwndDialog)) {

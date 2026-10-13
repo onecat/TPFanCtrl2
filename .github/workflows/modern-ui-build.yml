@@ -1,19 +1,18 @@
-name: Modern UI Windows build
+name: TPFanControl one-app Windows build
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - feature/win11-modern-ui
+    branches: [feature/win11-modern-ui]
     paths:
       - 'ui-modern/**'
+      - 'fancontrol/**'
       - '.github/workflows/modern-ui-build.yml'
-      - 'fancontrol/sharedstate.h'
   pull_request:
     paths:
       - 'ui-modern/**'
+      - 'fancontrol/**'
       - '.github/workflows/modern-ui-build.yml'
-      - 'fancontrol/sharedstate.h'
 
 permissions:
   contents: read
@@ -23,12 +22,20 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
-      - name: Configure native UI
-        run: cmake -S ui-modern -B build-modern -A Win32
-      - name: Build native UI
-        run: cmake --build build-modern --config Release --parallel
+      - name: Compile original executable with native modern UI
+        shell: pwsh
+        run: |
+          msbuild fancontrol/fancontrol.sln /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m
+      - name: Package complete application (one EXE)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item fancontrol/Release/TPFanControl.exe dist/TPFanControl.exe
+          Copy-Item fancontrol/TPFanControl.ini dist/TPFanControl.ini
+          Copy-Item fancontrol/pawnio/LpcACPIEC.bin dist/LpcACPIEC.bin
+          Compress-Archive -Path dist/* -DestinationPath TPFanCtrl2-OneApp-win11.zip -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: TPFanCtrlModern-win32
-          path: build-modern/Release/TPFanCtrlModern.exe
+          name: TPFanCtrl2-OneApp-win11
+          path: TPFanCtrl2-OneApp-win11.zip
           if-no-files-found: error
