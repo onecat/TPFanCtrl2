@@ -337,7 +337,7 @@ void PaintDashboard(HDC dc,RECT rect) {
 }
 void AdjustManual(int amount) {
     if(!Connected()||app.pending||app.mode!=3)return;
-    const int level=std::clamp(app.manualLevel+amount,1,7);
+    const int level=std::max(1,std::min(7,app.manualLevel+amount));
     if(level!=app.manualLevel){app.manualLevel=level;RequestMode(3);}
 }
 void ClickAt(int x,int y) {
@@ -449,8 +449,8 @@ bool ModernUI_Start(HWND legacyWindow,bool startMinimized) {
     wc.hInstance=instance;
     wc.lpszClassName=kWindowClass;
     wc.lpfnWndProc=WindowProc;
-    wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
-    wc.hIcon=LoadIconW(nullptr,IDI_APPLICATION);
+    wc.hCursor=LoadCursorW(nullptr,MAKEINTRESOURCEW(32512));
+    wc.hIcon=LoadIconW(nullptr,MAKEINTRESOURCEW(32512));
     wc.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1);
     if(!RegisterClassExW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
     RECT rect{0,0,S(900),S(860)};
