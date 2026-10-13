@@ -1799,8 +1799,18 @@ void FANCONTROL::ProcessTextIcons(void) {
 	}
 
 	if (pTextIconMutex->Lock(100)) {
+        // Explorer restart: release the old dynamic icon, tray object and
+        // pointer array before rebuilding. The previous branch leaked all
+        // of these objects whenever TaskbarCreated was broadcast.
+        if (this->TaskbarNew && ppTbTextIcon) {
+            for (int i = 0; i < MAX_TEXT_ICONS; ++i)
+                delete ppTbTextIcon[i];
+            delete[] ppTbTextIcon;
+            ppTbTextIcon = NULL;
+        }
+
 		//init ppTbTextIcon
-		if (!ppTbTextIcon || this->TaskbarNew) {
+		if (!ppTbTextIcon) {
 			this->TaskbarNew = 0;
 			ppTbTextIcon = new CTaskbarTextIcon * [MAX_TEXT_ICONS];
 			for (int i = 0; i < MAX_TEXT_ICONS; ++i)
