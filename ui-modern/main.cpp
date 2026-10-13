@@ -197,7 +197,11 @@ void UpdateTelemetry() {
     const bool wasPending = app.pending;
     const bool wasDenied = app.accessDenied;
     const bool wasAutostart = app.autostart;
-    const LONG wasStateSeq = app.stateSeq;
+    const int oldMode = app.mode;
+    const int oldProfile = app.profile;
+    const int oldFan1 = app.fan1;
+    const int oldFan2 = app.fan2;
+    const auto oldSensors = app.sensors;
     const ULONGLONG now = GetTickCount64();
 
     if (!app.shared) {
@@ -269,7 +273,9 @@ void UpdateTelemetry() {
     // No new snapshot or connection transition: don't force a repaint.
     if (wasConnected!=Connected() || wasPending!=app.pending ||
         wasDenied!=app.accessDenied || wasAutostart!=app.autostart ||
-        wasStateSeq!=app.stateSeq)
+        oldMode!=app.mode || oldProfile!=app.profile ||
+        oldFan1!=app.fan1 || oldFan2!=app.fan2 ||
+        oldSensors!=app.sensors)
         InvalidateDashboard();
 }
 void RequestMode(int mode) {
