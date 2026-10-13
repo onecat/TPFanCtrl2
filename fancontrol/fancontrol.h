@@ -314,6 +314,7 @@ public:
 	int ProcessDialog() const;
 
 	HWND GetDialogWnd() const { return hwndDialog; }
+	bool StartsMinimized() const { return StartMinimized != 0; }
 
 	HANDLE GetWorkThread() const { return hThread; }
 

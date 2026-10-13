@@ -1,0 +1,56 @@
+name: TPFanControl one-app Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/win11-modern-ui]
+    paths:
+      - 'ui-modern/**'
+      - 'fancontrol/**'
+      - '.github/workflows/modern-ui-build.yml'
+  pull_request:
+    paths:
+      - 'ui-modern/**'
+      - 'fancontrol/**'
+      - '.github/workflows/modern-ui-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check benchmark utility
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            'tools/measure-resources.ps1', [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+      - name: Compile original executable with native modern UI
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild/Current/Bin/MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'Unable to locate Visual Studio MSBuild' }
+          & $msbuild fancontrol/fancontrol.sln /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed: $LASTEXITCODE" }
+      - name: Package complete application (one EXE)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item fancontrol/Release/TPFanControl.exe dist/TPFanControl.exe
+          Copy-Item fancontrol/TPFanControl.ini dist/TPFanControl.ini
+          Copy-Item fancontrol/pawnio/LpcACPIEC.bin dist/LpcACPIEC.bin
+          Compress-Archive -Path dist/* -DestinationPath TPFanCtrl2-OneApp-win11.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TPFanCtrl2-OneApp-win11
+          path: TPFanCtrl2-OneApp-win11.zip
+          if-no-files-found: error

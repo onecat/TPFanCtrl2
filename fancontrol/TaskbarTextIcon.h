@@ -3,6 +3,8 @@
 #include "systemtraysdk.h"
 #include "DynamicIcon.h"
 #include <crtdbg.h>
+#include <string>
+#include <cstring>
 
 
 class CTaskbarTextIcon
@@ -12,7 +14,12 @@ class CTaskbarTextIcon
 		CDynamicIcon *m_pDicon;
 		int iFarbeIconC;
 		int iFontIconC;
-		LPCTSTR aTooltipC;
+        LPCTSTR aTooltipC;
+        // Cached visual state avoids allocating a fresh HICON and notifying
+        // Explorer for every 500 ms title timer tick when nothing changed.
+        int m_lastColor = -1;
+        int m_lastFont = -1;
+        std::string m_lastTooltip;
 
 		void _createdicon(const int iFarbeIconC, LPCTSTR aTooltipC, const int iFontIconC) 
 		{	
@@ -114,10 +121,35 @@ class CTaskbarTextIcon
 		const int iFontIconC = 9,
 		LPCTSTR aTooltipC =_T("/0")
 	) 
-	{
-		_setlines(line1,line2);
-		_createdicon(iFarbeIconC,aTooltipC,iFontIconC);        
-	}
+    {
+        const char* first = line1 ? line1 : "";
+        const char* second = line2 ? line2 : "";
+        const char* tip = aTooltipC ? aTooltipC : "";
+
+        // _setlines truncates both labels to three bytes, so compare the
+        // rendered text, not the full (possibly longer) sensor name.
+        char next1[LINESLEN] = {};
+        char next2[LINESLEN] = {};
+        strncpy_s(next1, sizeof(next1), first, LINESLEN-1);
+        strncpy_s(next2, sizeof(next2), second, LINESLEN-1);
+        const bool pixelsChanged =
+            strcmp(m_line1, next1) != 0 || strcmp(m_line2, next2) != 0 ||
+            m_lastColor != iFarbeIconC || m_lastFont != iFontIconC;
+        const bool tooltipChanged = m_lastTooltip != tip;
+        if (!pixelsChanged && !tooltipChanged)
+            return;
+
+        if (pixelsChanged) {
+            _setlines(first, second);
+            _createdicon(iFarbeIconC, tip, iFontIconC);
+            m_lastColor = iFarbeIconC;
+            m_lastFont = iFontIconC;
+        } else if (m_pSystray) {
+            // Tooltip changed but temperature bitmap did not.
+            m_pSystray->SetTooltipText(tip);
+        }
+        m_lastTooltip = tip;
+    }
 
     void DiShowballon
 	(
