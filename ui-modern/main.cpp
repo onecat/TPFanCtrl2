@@ -1,4 +1,4 @@
-// TPFanCtrl2 Modern UI: standalone native Win32 dashboard for original engine.
+// Integrated, low-overhead Win32 dashboard hosted in original TPFanControl.exe.
 // It does NOT access the ThinkPad embedded controller directly.
 // SPDX-License-Identifier: Unlicense
 #define WINVER 0x0A00
@@ -56,6 +56,8 @@ struct Dashboard {
     HWND hwnd = nullptr;
     HWND legacy = nullptr;
     bool autostart = false;
+    bool checkAutostart = true;
+    ULONGLONG lastAutostartCheck = 0;
     HANDLE mapping = nullptr;
     FCSHARED* shared = nullptr;
     bool dark = false;
@@ -80,6 +82,11 @@ struct Dashboard {
     HFONT heading = nullptr;
     RECT modes[3]{};
     RECT down{}, up{}, profileOne{}, profileTwo{}, startup{};
+    HDC backDc = nullptr;
+    HBITMAP backBitmap = nullptr;
+    HGDIOBJ oldBackBitmap = nullptr;
+    int backWidth = 0;
+    int backHeight = 0;
 } app;
 
 int S(int n) { return MulDiv(n, static_cast<int>(app.dpi), 96); }
@@ -103,6 +110,45 @@ void FontsCreate() {
     app.section = MakeFont(17, FW_SEMIBOLD);
     app.number = MakeFont(43, FW_BOLD);
     app.heading = MakeFont(23, FW_BOLD);
+}
+// Reuse the framebuffer while the dashboard is visible. A typical 900 x 860
+// bitmap costs about 3 MiB, so release it immediately on hide.
+void ReleaseBackBuffer() {
+    if (app.backDc) {
+        if (app.oldBackBitmap) SelectObject(app.backDc, app.oldBackBitmap);
+        if (app.backBitmap) DeleteObject(app.backBitmap);
+        DeleteDC(app.backDc);
+    }
+    app.backDc = nullptr;
+    app.backBitmap = nullptr;
+    app.oldBackBitmap = nullptr;
+    app.backWidth = 0;
+    app.backHeight = 0;
+}
+bool EnsureBackBuffer(HDC target, int width, int height) {
+    if (app.backDc && app.backWidth == width && app.backHeight == height)
+        return true;
+    ReleaseBackBuffer();
+    HDC mem = CreateCompatibleDC(target);
+    if (!mem) return false;
+    HBITMAP bitmap = CreateCompatibleBitmap(target, width, height);
+    if (!bitmap) { DeleteDC(mem); return false; }
+    HGDIOBJ original = SelectObject(mem, bitmap);
+    if (!original || original == HGDI_ERROR) {
+        DeleteObject(bitmap);
+        DeleteDC(mem);
+        return false;
+    }
+    app.backDc = mem;
+    app.backBitmap = bitmap;
+    app.oldBackBitmap = original;
+    app.backWidth = width;
+    app.backHeight = height;
+    return true;
+}
+void InvalidateDashboard() {
+    if (app.hwnd && IsWindowVisible(app.hwnd))
+        InvalidateRect(app.hwnd, nullptr, FALSE);
 }
 void Fill(HDC dc, RECT r, COLORREF color) {
     HBRUSH brush = CreateSolidBrush(color);
@@ -146,61 +192,85 @@ void Unmap() {
     app.stateAt=0;
 }
 void UpdateTelemetry() {
+    // EC polling is owned by the existing fan engine, not the dashboard.
+    const bool wasConnected = Connected();
+    const bool wasPending = app.pending;
+    const bool wasDenied = app.accessDenied;
+    const bool wasAutostart = app.autostart;
+    const LONG wasStateSeq = app.stateSeq;
+    const ULONGLONG now = GetTickCount64();
+
     if (!app.shared) {
         app.mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, kSharedMapping);
         if (app.mapping)
             app.shared = static_cast<FCSHARED*>(
                 MapViewOfFile(app.mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(FCSHARED)));
         if (!app.shared) {
-            app.accessDenied = GetLastError() == ERROR_ACCESS_DENIED;
+            const DWORD error = GetLastError();
+            app.accessDenied = (error == ERROR_ACCESS_DENIED);
             if (app.mapping) { CloseHandle(app.mapping); app.mapping=nullptr; }
-            InvalidateRect(app.hwnd,nullptr,FALSE);
-            return;
+        } else {
+            app.accessDenied = false;
+            app.stateSeq = 0;
+            app.stateAt = 0;
         }
-        app.accessDenied=false;
-        app.stateSeq=0;
-        app.stateAt=0;
     }
-    // The engine increments stateSeq after publishing, detect writes across a read.
-    for (int tries=0; tries<3; ++tries) {
-        const LONG before = InterlockedCompareExchange(&app.shared->stateSeq,0,0);
-        if (!before) {
-            app.stateSeq=0; app.stateAt=0; app.pending=false;
+
+    if (app.shared) {
+        for (int tries=0; tries<3; ++tries) {
+            const LONG before = InterlockedCompareExchange(&app.shared->stateSeq,0,0);
+            if (!before) {
+                app.stateSeq=0; app.stateAt=0; app.pending=false;
+                break;
+            }
+            if (before == app.stateSeq) break;
+            const int mode=app.shared->mode;
+            const int profile=app.shared->smartLevel;
+            const int raw=app.shared->fanCtrl;
+            const int fan1=Rpm(app.shared->fan1lo,app.shared->fan1hi);
+            const int fan2=Rpm(app.shared->fan2lo,app.shared->fan2hi);
+            std::array<int,12> values{};
+            for (size_t i=0;i<values.size();++i) {
+                const int v=app.shared->sensors[i];
+                values[i]=(v>0 && v<125)?v:-1;
+            }
+            MemoryBarrier();
+            if(before != InterlockedCompareExchange(&app.shared->stateSeq,0,0))
+                continue;
+            app.mode=mode;
+            app.profile=profile;
+            app.rawFanLevel=raw;
+            app.fan1=fan1;
+            app.fan2=fan2;
+            app.sensors=values;
+            app.stateSeq=before;
+            app.stateAt=now;
             break;
         }
-        if (before == app.stateSeq) break;
-        const int mode=app.shared->mode;
-        const int profile=app.shared->smartLevel;
-        const int raw=app.shared->fanCtrl;
-        const int fan1=Rpm(app.shared->fan1lo,app.shared->fan1hi);
-        const int fan2=Rpm(app.shared->fan2lo,app.shared->fan2hi);
-        std::array<int,12> values{};
-        for (size_t i=0;i<values.size();++i) {
-            const int v=app.shared->sensors[i];
-            values[i]=(v>0 && v<125)?v:-1;
+        if (!Connected()) app.pending=false;
+        if (app.pending) {
+            LONG ack=InterlockedCompareExchange(&app.shared->ackSeq,0,0);
+            if(static_cast<LONG>(ack-app.pendingSeq)>=0 ||
+               now-app.commandAt > kPendingMs)
+                app.pending=false;
         }
-        MemoryBarrier();
-        if(before != InterlockedCompareExchange(&app.shared->stateSeq,0,0))
-            continue;
-        app.mode=mode;
-        app.profile=profile;
-        app.rawFanLevel=raw;
-        app.fan1=fan1;
-        app.fan2=fan2;
-        app.sensors=values;
-        app.stateSeq=before;
-        app.stateAt=GetTickCount64();
-        break;
+    } else {
+        app.pending=false;
     }
-    if(!Connected()) app.pending=false;
-    app.autostart=FanControlAutostartEnabled();
-    if(app.pending && app.shared) {
-        LONG ack=InterlockedCompareExchange(&app.shared->ackSeq,0,0);
-        if(static_cast<LONG>(ack-app.pendingSeq)>=0 ||
-           GetTickCount64()-app.commandAt > kPendingMs)
-            app.pending=false;
+
+    // Avoid querying the Service Control Manager once every second.
+    if (app.checkAutostart || !app.lastAutostartCheck ||
+        now-app.lastAutostartCheck >= 60000) {
+        app.autostart=FanControlAutostartEnabled();
+        app.checkAutostart=false;
+        app.lastAutostartCheck=now;
     }
-    InvalidateRect(app.hwnd,nullptr,FALSE);
+
+    // No new snapshot or connection transition: don't force a repaint.
+    if (wasConnected!=Connected() || wasPending!=app.pending ||
+        wasDenied!=app.accessDenied || wasAutostart!=app.autostart ||
+        wasStateSeq!=app.stateSeq)
+        InvalidateDashboard();
 }
 void RequestMode(int mode) {
     if(!Connected() || app.pending || mode<1 || mode>3) return;
@@ -350,6 +420,7 @@ void ClickAt(int x,int y) {
     if(Hit(app.profileOne,p)) {RequestProfile(0);return;}
     if(Hit(app.profileTwo,p)) {RequestProfile(1);return;}
     if(Hit(app.startup,p) && app.legacy) {
+        app.checkAutostart = true;
         PostMessageW(app.legacy,WM_COMMAND,MAKEWPARAM(5050,BN_CLICKED),0);
         return;
     }
@@ -365,8 +436,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         if(!app.dpi)app.dpi=96;
         FontsCreate();
         SetFrameTheme();
-        SetTimer(hwnd,kPollTimer,1000,nullptr);
-        UpdateTelemetry();
+        // Defer display-only timer until this window becomes visible.
+        return 0;
+    case WM_SHOWWINDOW:
+        if (wp) {
+            app.checkAutostart = true;
+            SetTimer(hwnd,kPollTimer,1000,nullptr);
+            UpdateTelemetry();
+            InvalidateDashboard();
+        } else {
+            KillTimer(hwnd,kPollTimer);
+            ReleaseBackBuffer();
+        }
         return 0;
     case WM_TIMER:
         if(wp==kPollTimer){UpdateTelemetry();return 0;}
@@ -374,6 +455,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
     case WM_DPICHANGED: {
         app.dpi=HIWORD(wp);
         FontsCreate();
+        ReleaseBackBuffer();
         RECT* suggested=reinterpret_cast<RECT*>(lp);
         SetWindowPos(hwnd,nullptr,suggested->left,suggested->top,
             suggested->right-suggested->left,suggested->bottom-suggested->top,
@@ -383,12 +465,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
     }
     case WM_SETTINGCHANGE:
     case WM_THEMECHANGED:
-        app.dark=SystemDark();
-        SetFrameTheme();
-        InvalidateRect(hwnd,nullptr,TRUE);
+        {
+            const bool newDark = SystemDark();
+            if (newDark != app.dark) {
+                app.dark = newDark;
+                SetFrameTheme();
+                InvalidateDashboard();
+            }
+        }
         return 0;
     case WM_GETMINMAXINFO:
         reinterpret_cast<MINMAXINFO*>(lp)->ptMinTrackSize={S(820),S(810)};
+        return 0;
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED) ShowWindow(hwnd,SW_HIDE);
         return 0;
     case WM_LBUTTONUP:
         ClickAt(GET_X_LPARAM(lp),GET_Y_LPARAM(lp));
@@ -411,24 +501,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         RECT rect{};
         GetClientRect(hwnd,&rect);
         if(rect.right>0 && rect.bottom>0) {
-            HDC back=CreateCompatibleDC(dc);
-            HBITMAP bitmap=CreateCompatibleBitmap(dc,rect.right,rect.bottom);
-            if(back && bitmap) {
-                HGDIOBJ previous=SelectObject(back,bitmap);
-                PaintDashboard(back,rect);
-                BitBlt(dc,0,0,rect.right,rect.bottom,back,0,0,SRCCOPY);
-                SelectObject(back,previous);
+            if (EnsureBackBuffer(dc,rect.right,rect.bottom)) {
+                PaintDashboard(app.backDc,rect);
+                BitBlt(dc,0,0,rect.right,rect.bottom,app.backDc,0,0,SRCCOPY);
             } else {
+                // Draw directly if allocation fails; don't hide the controls.
                 PaintDashboard(dc,rect);
             }
-            if(bitmap)DeleteObject(bitmap);
-            if(back)DeleteDC(back);
         }
         EndPaint(hwnd,&ps);
         return 0;
     }
     case WM_DESTROY:
         KillTimer(hwnd,kPollTimer);
+        ReleaseBackBuffer();
         Unmap();FontsDestroy();
         app.hwnd=nullptr;
         return 0;
