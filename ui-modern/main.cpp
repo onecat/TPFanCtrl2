@@ -70,7 +70,7 @@ struct Dashboard {
     std::array<int,12> sensors{};
     UINT dpi = 96;
     HFONT normal = nullptr;
-    HFONT small = nullptr;
+    HFONT smallFont = nullptr;
     HFONT section = nullptr;
     HFONT number = nullptr;
     HFONT heading = nullptr;
@@ -88,14 +88,14 @@ HFONT MakeFont(int size, int weight) {
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
 }
 void FontsDestroy() {
-    for (HFONT* font : { &app.normal, &app.small, &app.section, &app.number, &app.heading }) {
+    for (HFONT* font : { &app.normal, &app.smallFont, &app.section, &app.number, &app.heading }) {
         if (*font) { DeleteObject(*font); *font = nullptr; }
     }
 }
 void FontsCreate() {
     FontsDestroy();
     app.normal = MakeFont(15, FW_NORMAL);
-    app.small = MakeFont(13, FW_NORMAL);
+    app.smallFont = MakeFont(13, FW_NORMAL);
     app.section = MakeFont(17, FW_SEMIBOLD);
     app.number = MakeFont(43, FW_BOLD);
     app.heading = MakeFont(23, FW_BOLD);
@@ -228,16 +228,16 @@ void ModeCard(HDC dc,int index,int x,int y,int w,const Theme& theme) {
     const wchar_t* details[]={L"Let firmware decide",L"Temperature profile",L"Fixed fan level"};
     Label(dc,titles[index],x+18,y+19,w-36,30,app.section,
           enabled?theme.text:theme.secondary);
-    Label(dc,details[index],x+18,y+54,w-36,25,app.small,theme.secondary);
+    Label(dc,details[index],x+18,y+54,w-36,25,app.smallFont,theme.secondary);
     if(active) {
         Round(dc,R(x+w-34,y+21,16,16),theme.accent,theme.accent,9);
-        Label(dc,L"ACTIVE",x+18,y+81,85,20,app.small,theme.good);
+        Label(dc,L"ACTIVE",x+18,y+81,85,20,app.smallFont,theme.good);
     }
 }
 void SensorCard(HDC dc,int index,int x,int y,int width,const Theme& theme) {
     const int temp=Connected()?app.sensors[index]:-1;
     Round(dc,R(x,y,width,52),theme.surface,theme.outline,12);
-    Label(dc,kNames[index],x+12,y+8,width/2+15,18,app.small,theme.secondary);
+    Label(dc,kNames[index],x+12,y+8,width/2+15,18,app.smallFont,theme.secondary);
     Label(dc,Reading(temp,L"°C"),x+width-69,y+6,58,24,app.section,
           temp>=85?theme.warn:theme.text,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
     const int barWidth=width-24;
@@ -252,7 +252,7 @@ void PaintDashboard(HDC dc,RECT rect) {
     const int content=W-2*left;
     Fill(dc,rect,t.background);
     Label(dc,L"ThinkPad",left,19,200,34,app.heading,t.text);
-    Label(dc,L"FAN CONTROL",left,53,250,21,app.small,t.secondary);
+    Label(dc,L"FAN CONTROL",left,53,250,21,app.smallFont,t.secondary);
     const bool live=Connected();
     const std::wstring status=live
         ? (app.pending?L"Applying change…":L"Engine connected")
@@ -263,18 +263,18 @@ void PaintDashboard(HDC dc,RECT rect) {
     const int half=(content-16)/2, top=100;
     Round(dc,R(left,top,half,176),t.surface,t.outline);
     Round(dc,R(left+half+16,top,half,176),t.surface,t.outline);
-    Label(dc,L"CPU TEMPERATURE",left+22,top+17,half-44,28,app.small,t.secondary);
+    Label(dc,L"CPU TEMPERATURE",left+22,top+17,half-44,28,app.smallFont,t.secondary);
     Label(dc,Reading(live?app.sensors[0]:-1,L"°C"),left+22,top+47,half-44,62,
           app.number,live && app.sensors[0]>=85?t.warn:t.text);
     Label(dc,live?L"ThinkPad EC sensor":L"Awaiting telemetry",
-          left+22,top+128,half-44,25,app.small,t.secondary);
+          left+22,top+128,half-44,25,app.smallFont,t.secondary);
     int rpmX=left+half+16;
-    Label(dc,L"FAN SPEED",rpmX+22,top+17,half-44,28,app.small,t.secondary);
+    Label(dc,L"FAN SPEED",rpmX+22,top+17,half-44,28,app.smallFont,t.secondary);
     Label(dc,Reading(live?app.fan1:-1,L" RPM"),rpmX+22,top+47,half-44,62,app.number,t.text);
     const std::wstring f2=live && app.fan2>=0 && app.fan2!=app.fan1
         ? L"Second fan: "+Reading(app.fan2,L" RPM")
         : L"EC fan speed feedback";
-    Label(dc,f2,rpmX+22,top+128,half-44,25,app.small,t.secondary);
+    Label(dc,f2,rpmX+22,top+128,half-44,25,app.smallFont,t.secondary);
 
     Label(dc,L"CONTROL MODE",left,295,280,28,app.section,t.text);
     const int mw=(content-26)/3;
@@ -293,7 +293,7 @@ void PaintDashboard(HDC dc,RECT rect) {
     Label(dc,L"+",left+339,454,34,31,app.section,canAdjust?t.text:t.secondary,
           DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     Label(dc,L"Levels 1–7 (fan stop disabled)",left+386,454,content-386,31,
-          app.small,t.secondary);
+          app.smallFont,t.secondary);
 
     Label(dc,L"TEMPERATURE SENSORS",left,506,360,31,app.section,t.text);
     const int gap=12,columns=4;
@@ -301,7 +301,7 @@ void PaintDashboard(HDC dc,RECT rect) {
     for(int i=0;i<12;++i)
         SensorCard(dc,i,left+(i%columns)*(cell+gap),543+(i/columns)*62,cell,t);
     Label(dc,L"TPFanCtrl2 Modern  •  Closing UI does not stop the fan service",
-          left,738,content,26,app.small,t.secondary);
+          left,738,content,26,app.smallFont,t.secondary);
 }
 void AdjustManual(int amount) {
     if(!Connected()||app.pending||app.mode!=3)return;
